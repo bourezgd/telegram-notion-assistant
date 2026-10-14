@@ -93,7 +93,7 @@ export function adhkarMessage(kind, today, env) {
   if (kind === 'am' && new Date(today + 'T12:00:00Z').getUTCDay() === 5) {
     lines.push('', '🕌 <b>يوم الجمعة:</b> أكثِر من الصلاة على النبي ﷺ');
   }
-  return { text: lines.join('\n'), markup: { inline_keyboard: [[{ text: '✅ قرأتها', callback_data: `sp|${kind}|${today}` }]] } };
+  return { text: lines.join('\n'), markup: { inline_keyboard: [[{ text: '✅ قرأتها', callback_data: `sp|${kind}|${today}` }, { text: '😔 نسيتها', callback_data: `sp|${kind}f|${today}` }]] } };
 }
 
 export function wirdMessage(w, today) {
@@ -115,12 +115,12 @@ export async function checkSpiritual(env, state, now) {
   const off = (await env.STATE.get('spirit', 'json')) || {};
   const r = await getRamadan(env), rd = ramadanDay(today, env, r);
   let changed = false;
-  // الحجز يُحفظ فورًا قبل الإرسال حتى لا يعيده تشغيل متداخل (Notion بطيء)، ويُفرج عنه إن فشل الإرسال
+  // الحجز يُحفظ فورًا قبل الإرسال حتى لا يعيده تشغيل متداخل (Notion بطيء)، ويُفرج عنه إن تعذّر الإرسال مؤقتًا فقط
   const once = async (key, at, grace, fn) => {
     if (now < at || now - at > grace || state.sent[key]) return;
     if (!await claim(env, state, key, now)) return;
     changed = true;
-    try { await fn(); } catch (err) { await release(env, state, key); throw err; }
+    try { await fn(); } catch (err) { if (err.transient) await release(env, state, key); throw err; }
   };
   // «✅ قرأتها» تُسجَّل في المتتبع: هو المرجع، فلا تُرسل الأذكار إن سُجّلت ولو ضاعت علامة الإرسال
   const adhkar = kind => async () => {
@@ -201,6 +201,12 @@ export async function onSpiritButton(cb, env) {
   if (act === 'kf') {
     await answer(env, cb.id, 'تقبّل الله 🤲');
     return editMessage(env, mid, { text: '✅ <b>قرأت سورة الكهف</b> · تقبّل الله', markup: NO_BUTTONS });
+  }
+  // «😔 نسيتها»: لا يُسجَّل في المتتبع، وتُغلق الرسالة بلطف (السلسلة تنقطع إن لم تُقرأ اليوم)
+  if (act === 'amf' || act === 'pmf') {
+    const kind = act.slice(0, 2);
+    await answer(env, cb.id);
+    return editMessage(env, mid, { text: `😔 <b>فاتتك ${TRK[kind]} ${date === localDate(Date.now(), env.TZ_NAME) ? 'اليوم' : `يوم ${esc(fmtDay(date, env))}`}</b>\nلا بأس — ${kind === 'am' ? 'أذكار المساء بعد العصر، و' : ''}نلتقي ${kind === 'am' ? 'صباح الغد' : 'غدًا'} إن شاء الله 🤍`, markup: NO_BUTTONS });
   }
   if (act === 'tar') {
     await setTracker(env, date, { [TRK.tar]: { checkbox: true } });

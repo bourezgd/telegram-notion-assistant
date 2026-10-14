@@ -149,3 +149,14 @@ test('الجمعة: سورة الكهف بعد صلاة الجمعة بساعة�
   assert.equal(sentWith(w, 'سورة الكهف').length, 0);
   w.restore();
 });
+
+test('«😔 نسيتها» في الأذكار: تُغلق الرسالة بلطف ولا تُسجَّل في المتتبع', async () => {
+  const w = createWorld({ now: '2026-10-03T06:10:00Z' }); // السبت 07:10
+  await w.cron();
+  const [m] = sentWith(w, 'أذكار الصباح');
+  assert.deepEqual(w.buttons(m).map(b => b.text), ['✅ قرأتها', '😔 نسيتها']);
+  await w.press('sp|amf|2026-10-03', w.nextMid);
+  assert.match(w.texts(w.flush()).at(-1), /فاتتك أذكار الصباح اليوم[\s\S]*أذكار المساء بعد العصر/);
+  assert.ok(!tracker(w, '2026-10-03')?.props['أذكار الصباح']?.checkbox);
+  w.restore();
+});

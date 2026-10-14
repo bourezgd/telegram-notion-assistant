@@ -226,7 +226,7 @@ export async function checkMedicines(env, state, now) {
       await say(env, [`💊 <b>وقت الدواء: ${esc(name)}</b>`, [person ? `👤 ${esc(person)}` : '', `🕘 ${t}`, note && note !== '—' ? esc(note) : ''].filter(Boolean).join(' · '),
         left === 0 ? '🏁 آخر يوم في العلاج' : left ? `⏳ بقي ${left} ${left <= 10 ? 'أيام' : 'يومًا'}` : ''].filter(Boolean).join('\n'),
         { inline_keyboard: [[{ text: '✅ أُخذ', callback_data: 'md|ok' }]] })
-        .catch(async err => { await release(env, state, key); throw err; });
+        .catch(async err => { if (err.transient) await release(env, state, key); throw err; });
     }
   }
   return changed;

@@ -7,10 +7,10 @@ import { checkEvents } from './events.js';
 import { isWeekend, nextWorkday, withJiha } from './jihat.js';
 import { say } from './messages.js';
 import { checkMorning } from './morning.js';
-import { checkMemories } from './diary.js';
+import { checkChildNudge, checkMemories } from './diary.js';
 import { checkPrayers } from './prayer.js';
 import { checkQuota } from './quota.js';
-import { STEP, createNext } from './repeat.js';
+import { STEP, createNext, jihaOf } from './repeat.js';
 import { checkReview, localHourOf } from './review.js';
 import { checkSpiritual } from './spirit.js';
 import { addDays, fmtTime, localDate, zonedToUtc } from './time.js';
@@ -58,7 +58,7 @@ export async function claim(env, state, key, now) {
   await saveState(env, state, fresh); // بلا قراءة ثانية: أضيق نافذة ممكنة بين التحقق والكتابة
   return true;
 }
-// فشل الإرسال بعد الحجز ← تُعاد المحاولة في الدقيقة التالية
+// تعذّر الإرسال مؤقتًا بعد الحجز ← تُعاد المحاولة في الدقيقة التالية (الرفض الدائم لا يُفرج عنه حتى لا يُعاد كل دقيقة)
 export async function release(env, state, key) {
   state.sent[key] = 0;
   await saveState(env, state);
@@ -81,26 +81,30 @@ export async function checkDue(env) {
   calls += pr.calls;
   if (pr.changed) { await saveState(env, state); snap = JSON.stringify(state); }
 
+  // كل جزء معزول عن غيره: فشل أحدها (عادة لا تُرسل، استعلام Notion يُرفض) يُبلَّغ عنه ولا يوقف البقية.
+  const part = async (name, fn) => { try { return await fn(); } catch (err) { await reportError(env, name, err); } };
   try {
 
   // 0ب) الأذكار والورد ورمضان (أوقاتها مرتبطة بالصلاة)
-  if (on('prayer') && await checkSpiritual(env, state, now)) changed = true;
+  if (on('prayer') && await part('الأذكار', () => checkSpiritual(env, state, now))) changed = true;
   // 0ج) العادات في أوقاتها
-  if (await checkHabits(env, state, now)) changed = true;
+  if (await part('العادات', () => checkHabits(env, state, now))) changed = true;
 
   // 1) ما عُدّل في Notion خلال الدقائق الأخيرة ← تحديث رسالته في تلغرام إن كانت قد أُرسلت
-  const edited = await withJiha(env, (await Promise.all(Object.keys(SOURCES).map(kind => queryItems(env, kind, {
-    timestamp: 'last_edited_time', last_edited_time: { on_or_after: new Date(now - EDIT_LOOKBACK_MS).toISOString() },
-  })))).flat());
-  for (const item of edited) {
-    const msg = state.msgs[item.id];
-    if (!msg || calls >= MAX_CALLS_PER_RUN) continue;
-    const v = view(item, msg.start, env);
-    if (v.sig === msg.sig) continue;
-    await editMessage(env, msg.mid, v);
-    calls++;
-    msg.sig = v.sig; changed = true;
-  }
+  await part('تحديث الرسائل', async () => {
+    const edited = await withJiha(env, (await Promise.all(Object.keys(SOURCES).map(kind => queryItems(env, kind, {
+      timestamp: 'last_edited_time', last_edited_time: { on_or_after: new Date(now - EDIT_LOOKBACK_MS).toISOString() },
+    })))).flat());
+    for (const item of edited) {
+      const msg = state.msgs[item.id];
+      if (!msg || calls >= MAX_CALLS_PER_RUN) continue;
+      const v = view(item, msg.start, env);
+      if (v.sig === msg.sig) continue;
+      await editMessage(env, msg.mid, v);
+      calls++;
+      msg.sig = v.sig; changed = true;
+    }
+  });
 
   // 2) ما حلّ موعده ← رسالة مستقلة بأزرار
   const due = (await Promise.all(Object.keys(SOURCES).map(kind => queryItems(env, kind, { and: [
@@ -109,6 +113,21 @@ export async function checkDue(env) {
     ...SOURCES[kind].closed.map(s => ({ property: SOURCES[kind].status, select: { does_not_equal: s } })),
   ] })))).flat().sort((a, b) => a.alertAt - b.alertAt);
   await withJiha(env, due);
+
+  // نسخ مكررة مفتوحة (نفس العنوان والموعد والجهة) — من خطأ التكرار السابق أو إضافة مرتين: نُبقي واحدة
+  // (ما عليه «تكرار تلقائي» أولًا حتى لا ينقطع التكرار) وننقل الباقي إلى سلة Notion (تُسترجع خلال 30 يومًا)
+  const groups = new Map();
+  // بالوقت الفعلي لا بنص الموعد: الموعد نفسه قد يُكتب ‎+01:00 أو Z
+  for (const i of due) { const k = `${i.kind}|${i.title}|${i.alertAt}|${jihaOf(i.raw)}`; groups.set(k, [...(groups.get(k) || []), i]); }
+  for (const g of groups.values()) {
+    const keep = g.find(i => i.auto) || g[0];
+    for (const i of g) {
+      if (i === keep || budgetLeft() < SUBREQ_RESERVE) continue;
+      due.splice(due.indexOf(i), 1);
+      await part('حذف نسخة مكررة', () => notion(env, 'PATCH', `pages/${i.id}`, { in_trash: true }));
+      calls++;
+    }
+  }
 
   for (const item of due) {
     const key = `${item.id}:${item.start}`;
@@ -124,11 +143,16 @@ export async function checkDue(env) {
     }
     if (!await claim(env, state, key, now)) continue;
     changed = true;
+    // كل عنصر معزول: فشله يُبلَّغ عنه ونكمل بالبقية. العطل المؤقت (الخدمة لا تستجيب) يُعاد في الدقيقة التالية،
+    // أما الرفض الدائم (مثل رسالة يرفضها تلغرام) فلا يُعاد كل دقيقة
     try {
-      // عنصر متكرر تلقائيًا: نُنشئ موعده التالي لحظة حلول الحالي
+      // عنصر متكرر تلقائيًا: نُنشئ موعده التالي لحظة حلول الحالي (وفشله لا يمنع تنبيه الحالي)
       if (item.auto && STEP[item.repeat]) {
-        await createNext(env, item, state);
-        calls += 2;
+        calls += 3;
+        await createNext(env, item, state).catch(async err => {
+          if (err.transient) throw err;
+          await reportError(env, `تكرار «${item.title}»`, err);
+        });
       }
       if (now - item.alertAt <= DUE_GRACE_MS) {
         const v = view(item, item.start, env);
@@ -140,8 +164,9 @@ export async function checkDue(env) {
         state.msgs[item.id] = { mid: sent.message_id, start: item.start, sig: v.sig, t: now };
       }
     } catch (err) {
-      await release(env, state, key);
-      throw err;
+      if (err.transient) await release(env, state, key);
+      await reportError(env, `تنبيه «${item.title}»`, err);
+      if (err.transient) break; // الخدمة لا تستجيب: نكمل الباقي في الدقيقة التالية
     }
   }
 
@@ -175,7 +200,7 @@ export async function checkDue(env) {
 
   // 3) مراجعة المساء، التقرير الأسبوعي، المناسبات — كلٌّ مستقل عن الآخر
   // كلٌّ منها مُعلَّم في KV بعد النجاح، فتأجيله لدقيقة لاحقة آمن
-  for (const [name, fn, need, feature] of [['الملخص الصباحي', checkMorning, 14], ['مراجعة المساء', checkReview, 8], ['التقرير الأسبوعي', checkWeekly, 14], ['المناسبات', checkEvents, 8], [`ذكريات ${cfg.child}`, checkMemories, 6, 'child'], ['الحصة الشهرية', checkQuota, 8, 'jihat'], ['الرواتب والفواتير', checkBills, 10, 'money']]) {
+  for (const [name, fn, need, feature] of [['الملخص الصباحي', checkMorning, 14], ['مراجعة المساء', checkReview, 8], ['التقرير الأسبوعي', checkWeekly, 14], ['المناسبات', checkEvents, 8], [`ذكريات ${cfg.child}`, checkMemories, 6, 'child'], ['تذكير صور الطفل', checkChildNudge, 4, 'child'], ['الحصة الشهرية', checkQuota, 8, 'jihat'], ['الرواتب والفواتير', checkBills, 10, 'money']]) {
     if (budgetLeft() < need || (feature && !on(feature))) continue;
     try { await fn(env, now); } catch (err) { await reportError(env, name, err); }
   }

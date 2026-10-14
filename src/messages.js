@@ -10,7 +10,7 @@ import { dayView } from './dayview.js';
 import { eventsList } from './events.js';
 import { EARN_BTN, SPEND_BTN, askMoney, getFDraft, moneySummary, parseAmount, parseMoneyText, putFDraft, saveMoney, startMoney } from './money.js';
 import { morningBrief } from './morning.js';
-import { onDriveText, onPhotoNote } from './diary.js';
+import { milestonesView, onDriveText, onPhotoNote } from './diary.js';
 import { monthQuota, quotaView } from './quota.js';
 import { SETTINGS_BTN, onSettingsText, settingsView } from './settings.js';
 import { onWirdPageText, wirdView } from './spirit.js';
@@ -95,7 +95,7 @@ export async function onMessage(message, env) {
       '• 📊 حصة كل جهة هذا الشهر (المنجز من المخطط): /quota',
       '• 💬 <b>اسألني</b> عن أي شيء في بياناتك، مثل: «ماذا عندي غدًا؟» · «كم صرفت هذا الشهر على التغذية؟» (أو بالصوت).',
       '• 🔍 أرسل <b>صورة وصل أو فاتورة أو وصفة أو بطاقة موعد</b> فأسجّلها لك (مصروف، تذكير دفع، دواء، موعد).',
-      cfg.child ? `• 📸 أرسل <b>صورة ل${esc(cfg.child)}</b> فتُحفظ في Google Drive وفي «📸 يوميات» بتاريخها وعمر${cfg.girl ? 'ها' : 'ه'} وملاحظتك.` : '',
+      cfg.child ? `• 📸 أرسل <b>صورة ل${esc(cfg.child)}</b> فتُحفظ في Google Drive وفي «📸 يوميات» بتاريخها وعمر${cfg.girl ? 'ها' : 'ه'} وملاحظتك. ملاحظة تبدأ بـ «أول…» تُضاف إلى 🌟 /milestones` : '',
     ].filter(Boolean).join('\n'), await mainKb(env));
   }
   if (text === '/cancel') { await dropDraft(env); await env.STATE.delete('fdraft'); return say(env, 'أُلغيت الإضافة.', await mainKb(env)); }
@@ -111,6 +111,7 @@ export async function onMessage(message, env) {
   if (['/bills', 'الفواتير', 'الاشتراكات'].includes(text)) { const v = await billsView(env); return say(env, v.text, v.markup); }
   if (['/analysis', 'التحليل', 'تحليل الشهر', 'تحليل'].includes(text)) return say(env, await monthAnalysis(env, Date.now(), -1));
   if (['/month', 'تحليل هذا الشهر'].includes(text)) return say(env, await monthAnalysis(env, Date.now(), 0));
+  if (cfg.child && ['/milestones', 'اللحظات', `لحظات ${cfg.child}`, 'أول مرة', 'اول مرة'].includes(text)) return say(env, await milestonesView(env));
   if (['/wird', '/adhkar', 'الورد', 'الأذكار', 'الاذكار'].includes(text)) { const v = await wirdView(env); return say(env, v.text, v.markup); }
   if (['/status', 'الحالة', 'حالة البوت'].includes(text)) { const v = await statusView(env); return say(env, v.text, v.markup); }
   if (['/morning', 'صباح', 'الملخص', 'ملخص الصباح'].includes(text)) { const v = await morningBrief(env, Date.now()); return say(env, v.text, v.markup); }

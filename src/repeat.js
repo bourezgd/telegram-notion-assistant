@@ -1,7 +1,8 @@
 import { notion } from './api.js';
-import { SOURCES } from './core.js';
+import { DAY, SOURCES } from './core.js';
 import { nextWorkday } from './jihat.js';
-import { addDays, addMonths, fmtTime, localDate } from './time.js';
+import { addDays, addMonths, fmtTime, localDate, zonedToUtc } from './time.js';
+import { JIHA_PROP } from './weekly.js';
 
 // ───────────────────────── التكرار التلقائي ─────────────────────────
 
@@ -23,11 +24,27 @@ export async function createNext(env, item, state) {
     : { start: next } };
   props[src.status] = { select: { name: src.open } };
   props[src.auto] = { checkbox: true };
-  const created = await notion(env, 'POST', 'pages', { parent: { type: 'data_source_id', data_source_id: src.ds }, properties: props });
+  // الموعد التالي موجود مسبقًا (أنشأته نسخة مكررة من المهمة نفسها): لا ننشئه ثانية، وإلا تتكاثر النسخ مع كل تكرار
+  const created = await nextExists(env, item, next)
+    ? null : await notion(env, 'POST', 'pages', { parent: { type: 'data_source_id', data_source_id: src.ds }, properties: props });
   await notion(env, 'PATCH', `pages/${item.id}`, { properties: { [src.auto]: { checkbox: false } } });
   delete state.anchors[item.id];
-  if (unit === 'm' && anchor > 28 && !item.raw['يوم الشهر']) state.anchors[created.id.replace(/-/g, '')] = anchor;
+  if (created && unit === 'm' && anchor > 28 && !item.raw['يوم الشهر']) state.anchors[created.id.replace(/-/g, '')] = anchor;
 }
+
+// عنصر بنفس العنوان (ولنفس الجهة) في يوم الموعد التالي؟
+async function nextExists(env, item, next) {
+  const src = SOURCES[item.kind];
+  const from = zonedToUtc(next, '00:00', env.TZ_NAME);
+  const res = await notion(env, 'POST', `data_sources/${src.ds}/query`, { filter: { and: [
+    { property: src.title, title: { equals: item.title } },
+    ...(item.hasTime
+      ? [{ property: src.date, date: { on_or_after: new Date(from).toISOString() } }, { property: src.date, date: { before: new Date(from + DAY).toISOString() } }]
+      : [{ property: src.date, date: { equals: next } }]),
+  ] }, page_size: 10 });
+  return res.results.some(p => jihaOf(p.properties) === jihaOf(item.raw));
+}
+export const jihaOf = props => props?.[JIHA_PROP]?.relation?.[0]?.id?.replace(/-/g, '') || null;
 
 // ينسخ الخصائص القابلة للكتابة فقط (الصيغ والتجميعات والتواريخ التلقائية تُتجاهل)
 export function copyProps(raw) {

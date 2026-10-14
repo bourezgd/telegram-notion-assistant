@@ -91,6 +91,7 @@ export function createWorld({ now = '2026-09-25T10:00:00Z', geminiKey } = {}) {
       if ('equals' in f.select) return v === f.select.equals;
     }
     if (f.checkbox) return (p?.checkbox === true) === f.checkbox.equals;
+    if (f.title) return (p?.title || []).map(t => t.plain_text).join('') === f.title.equals;
     return true;
   }
   const api = id => ({ id, url: `https://notion.so/${id}`, in_trash: !!w.pages[id].trash, properties: w.pages[id].props });
@@ -127,6 +128,9 @@ export function createWorld({ now = '2026-09-25T10:00:00Z', geminiKey } = {}) {
     if (url.includes('api.telegram.org/file/')) return res(200, {});
     if (url.includes('api.telegram.org')) {
       const method = url.split('/').pop();
+      const fail = w.tgFail?.(method, body);
+      if (fail === 'down') return res(502, { ok: false, description: 'Bad Gateway' }); // عطل مؤقت
+      if (fail) return res(400, { ok: false, description: 'Bad Request: simulated failure' });
       w.sent.push({ method, ...body });
       const result = method === 'getFile' ? { file_path: 'photos/file_7.jpg' } : { message_id: ++w.nextMid };
       return res(200, { ok: true, result });

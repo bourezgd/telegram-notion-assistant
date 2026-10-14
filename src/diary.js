@@ -88,7 +88,7 @@ export async function onPhoto(message, env) {
 
 export function photoCard(p, env, ask) {
   const lines = [`👶 <b>${cfg.child}</b> — صورة محفوظة ✅`, `📅 ${esc(p.dateText)}${p.age ? ` · ${esc(p.age)}` : ''}`];
-  if (p.note) lines.push(`📝 ${esc(p.note)}`);
+  if (p.note) lines.push(`📝 ${esc(p.note)}`, ...(isMilestone(p.note) ? ['🌟 <b>لحظة أولى</b> — أُضيفت إلى /milestones'] : []));
   else if (ask) lines.push('', '✍️ <b>اكتب ملاحظة عن هذه الصورة</b> (ماذا حدث؟ أين؟ مع من؟)');
   lines.push(`<a href="${esc(p.driveUrl)}">Drive</a> · <a href="${esc(p.url)}">Notion</a>`);
   const row = [{ text: p.fav ? '⭐ مفضّلة' : '☆ مفضّلة', callback_data: 'ph|f' }];
@@ -322,4 +322,47 @@ export async function checkMemories(env, now) {
     }
   }
   await env.STATE.put('memday', today, { expirationTtl: 3 * 24 * 3600 });
+}
+
+// ───────── 🌟 لحظات الطفل الأولى ─────────
+// صورة ملاحظتها تبدأ بـ «أول…» (أول ابتسامة، أول سنّ، أول خطوة) أو فيها «لأول مرة» ← لحظة مميزة.
+// /milestones: خطّ زمني لها بعمره في كل لحظة.
+export const isMilestone = note => /^[\s\p{P}\p{S}]*(أول|اول|أوّل)\s/u.test(note || '') || /لأول مرة|لاول مرة|لأوّل مرة/.test(note || '');
+
+export async function milestonesView(env) {
+  const rows = await queryAll(env, DIARY.ds, { or: [
+    { property: DIARY.note, rich_text: { starts_with: 'أول' } }, { property: DIARY.note, rich_text: { starts_with: 'اول' } },
+    { property: DIARY.note, rich_text: { starts_with: 'أوّل' } }, { property: DIARY.note, rich_text: { contains: 'أول مرة' } },
+    { property: DIARY.note, rich_text: { contains: 'اول مرة' } },
+  ] });
+  const list = rows.map(r => {
+    const pr = r.properties;
+    return { day: pr[DIARY.date]?.date?.start?.slice(0, 10) || '', note: plainText(pr[DIARY.note]), age: plainText(pr['العمر']) || ageText(cfg.birth, pr[DIARY.date]?.date?.start?.slice(0, 10) || ''), link: pr['الصورة']?.url || r.url };
+  }).filter(m => m.day && isMilestone(m.note)).sort((a, b) => a.day.localeCompare(b.day));
+  const lines = [`🌟 <b>لحظات ${esc(cfg.child)} الأولى</b>`, ''];
+  if (!list.length) lines.push('لا لحظات بعد.', `عند حفظ صورة ل${esc(cfg.child)} اكتب ملاحظة تبدأ بـ «أول…»، مثل: <i>أول ابتسامة</i> · <i>أول سنّ</i> · <i>أول خطوة</i> — فتُضاف هنا تلقائيًا.`);
+  for (const m of list) lines.push(`• <a href="${esc(m.link)}">${esc(shortTitle(m.note.replace(/\n/g, ' '), 80))}</a>`, `   <i>${esc(fmtDay(m.day, env))}${m.age ? ` · ${esc(m.age)}` : ''}</i>`);
+  if (list.length) lines.push('', `<i>${list.length} لحظة · أضف غيرها بملاحظة تبدأ بـ «أول…»</i>`);
+  return lines.join('\n');
+}
+
+// ───────── 📸 تذكير التوثيق ─────────
+// إن مرّ أسبوع (CHILD_NUDGE_DAYS) بلا صورة جديدة للطفل ← تذكير لطيف الساعة CHILD_NUDGE_TIME، ثم كل أسبوع ما دام الصمت.
+export async function checkChildNudge(env, now) {
+  if (!cfg.child) return;
+  if (!pastLocalTime(now, env, env.CHILD_NUDGE_TIME || '18:00')) return;
+  const today = localDate(now, env.TZ_NAME);
+  if ((await env.STATE.get('nudgeday')) === today) return;
+  await env.STATE.put('nudgeday', today, { expirationTtl: 3 * 24 * 3600 });
+  if (!(await env.STATE.get('drive'))) return; // بلا Drive لا تُحفظ الصور أصلًا
+  const days = Number(env.CHILD_NUDGE_DAYS || 7);
+  const last = await env.STATE.get('nudge_last');
+  if (last && Date.parse(today) - Date.parse(last) < days * 864e5) return;
+  const since = new Date(now - days * 864e5).toISOString();
+  const recent = await notion(env, 'POST', `data_sources/${DIARY.ds}/query`, { filter: { timestamp: 'created_time', created_time: { on_or_after: since } }, page_size: 1 });
+  if (recent.results.length) return;
+  await env.STATE.put('nudge_last', today, { expirationTtl: 60 * 24 * 3600 });
+  const age = ageText(cfg.birth, today);
+  const [ha, hi] = cfg.girl ? ['ها', 'ها'] : ['ه', 'ه'];
+  await say(env, [`📸 <b>لم نوثّق ${esc(cfg.child)} منذ ${days === 7 ? 'أسبوع' : `${days} أيام`}</b>`, age ? `عمر${ha} اليوم ${esc(age)} — كل يوم يتغيّر في${hi} شيء ✨` : '', `أرسل ل${ha} صورة اليوم مع كلمة عمّا ${cfg.girl ? 'تفعله' : 'يفعله'}.`].filter(Boolean).join('\n'));
 }

@@ -92,7 +92,7 @@ export async function checkHabits(env, state, now) {
       if (done.includes(slot) || !await claim(env, state, key, now)) continue;
       changed = true;
       const v = reminderView(h, today, slot, done);
-      await say(env, v.text, v.markup).catch(async err => { await release(env, state, key); throw err; });
+      await say(env, v.text, v.markup).catch(async err => { if (err.transient) await release(env, state, key); throw err; });
     }
     // تذكير ثانٍ إن لم تُنجز (للعادة ذات الوقت الواحد)
     if (h.remind && !multi) {
@@ -100,7 +100,7 @@ export async function checkHabits(env, state, now) {
       if (now >= at && now - at <= 2 * 3600e3 && await claim(env, state, key, now)) {
         changed = true;
         const v = reminderView(h, today, h.time, [], true);
-        await say(env, v.text, v.markup).catch(async err => { await release(env, state, key); throw err; });
+        await say(env, v.text, v.markup).catch(async err => { if (err.transient) await release(env, state, key); throw err; });
       }
     }
   }

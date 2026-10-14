@@ -13,6 +13,8 @@ FAMILY = "أنا,الزوجة"     # الأشخاص في الملف الصحي،
 CHILD_NAME = ""          # اسم طفلك لميزات يوميات الصور والنمو (فارغ = بلا هذه الميزات)
 CHILD_BIRTH = ""         # تاريخ ميلاده YYYY-MM-DD
 CHILD_SEX = "girl"       # girl أو boy (لصيغة الكلام ومتوسطات النمو)
+CHILD_NUDGE_TIME = "18:00" # تذكير لطيف إن مرّ CHILD_NUDGE_DAYS يومًا بلا صورة جديدة للطفل
+CHILD_NUDGE_DAYS = "7"
 COUNTRY = "الجزائر"
 DISABLE = ""             # ميزات تريد إيقافها، مثل: "prayer,money" — prayer (الصلاة والأذكار والورد ورمضان) · money (المال) · jihat (الحصص)
 

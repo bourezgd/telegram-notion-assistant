@@ -170,3 +170,55 @@ test('في مثل هذا اليوم: صورة العام الماضي تصل ص�
   assert.equal(w.flush().filter(m => m.method === 'sendPhoto').length, 0);
   w.restore();
 });
+
+test('🌟 /milestones: الملاحظات التي تبدأ بـ «أول» أو فيها «لأول مرة» مرتّبة زمنيًا بعمر مريم', async () => {
+  const w = createWorld({ now: '2026-10-01T10:00:00Z' });
+  const add = (day, note, age) => w.add('nour', { 'الوصف': P.title(note), 'التاريخ': P.date(day), 'الملاحظة': P.text(note), 'العمر': P.text(age), 'الصورة': P.url(`https://drive.google.com/${day}`) });
+  add('2026-06-10', 'أول سنّ ظهر اليوم', '5 أشهر و5 أيام');
+  add('2026-03-02', '🥹 أول ابتسامة لي', 'شهران');
+  add('2026-04-01', 'جلست وحدها لأول مرة', '3 أشهر');
+  add('2026-05-01', 'في بيت جدتها', '4 أشهر');
+  await w.text('/milestones');
+  const t = w.texts(w.flush()).at(-1);
+  assert.match(t, /لحظات مريم الأولى[\s\S]*أول ابتسامة[\s\S]*شهران[\s\S]*لأول مرة[\s\S]*أول سنّ[\s\S]*3 لحظة/);
+  assert.doesNotMatch(t, /جدتها/);
+  w.restore();
+});
+
+test('📸 تذكير التوثيق: بعد أسبوع بلا صورة يصل الساعة 18:00 مرة، ولا يتكرر قبل أسبوع آخر، ولا يصل إن أُرسلت صورة', async () => {
+  const w = createWorld({ now: '2026-09-01T10:00:00Z' });
+  w.add('nour', { 'الوصف': P.title('صورة'), 'التاريخ': P.date('2026-09-01') }); // أُنشئت 1 سبتمبر
+  w.kv.drive = JSON.stringify({ url: EXEC, secret: 's', folder: 'صور مريم', folderUrl: 'https://drive.google.com/x' });
+  const nudges = () => w.texts(w.flush()).filter(t => t.includes('لم نوثّق مريم')).length;
+  w.now = Date.parse('2026-09-05T17:01:00Z'); // 18:01 — مرّت 4 أيام فقط
+  await w.cron();
+  assert.equal(nudges(), 0);
+  w.now = Date.parse('2026-09-09T16:30:00Z'); // 17:30 — قبل الموعد
+  await w.cron();
+  assert.equal(nudges(), 0);
+  w.now = Date.parse('2026-09-09T17:01:00Z'); // 18:01 بعد 8 أيام
+  await w.cron();
+  assert.equal(nudges(), 1);
+  w.now += 60e3; await w.cron();
+  w.now = Date.parse('2026-09-12T17:01:00Z'); await w.cron();
+  assert.equal(nudges(), 0, 'لا تكرار قبل أسبوع');
+  w.now = Date.parse('2026-09-16T17:01:00Z'); await w.cron();
+  assert.equal(nudges(), 1, 'أسبوع آخر من الصمت');
+  // صورة جديدة ← لا تذكير بعد أسبوع من التذكير السابق
+  w.now = Date.parse('2026-09-20T10:00:00Z');
+  w.add('nour', { 'الوصف': P.title('صورة'), 'التاريخ': P.date('2026-09-20') });
+  w.now = Date.parse('2026-09-23T17:01:00Z'); await w.cron();
+  assert.equal(nudges(), 0);
+  w.restore();
+});
+
+test('ملاحظة «أول…» على صورة مريم ← «🌟 لحظة أولى» في بطاقتها', async () => {
+  const w = createWorld({ now: '2026-09-25T13:30:00Z' });
+  await link(w);
+  await w.photo('أول خطوة وحدها');
+  const card = w.nextMid;
+  w.flush();
+  await w.press('ph|n', card);
+  assert.match(w.texts(w.flush()).join('\n'), /📝 أول خطوة وحدها\n🌟 <b>لحظة أولى<\/b>/);
+  w.restore();
+});

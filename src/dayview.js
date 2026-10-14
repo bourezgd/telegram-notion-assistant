@@ -3,6 +3,7 @@ import { answer, notion } from './api.js';
 import { snoozeDate } from './buttons.js';
 import { DAY, SOURCES } from './core.js';
 import { EVENT_ICON, loadEvents, yearsText } from './events.js';
+import { withJiha } from './jihat.js';
 import { PRAYERS, prayerName, prayerTimes, trackerRow } from './prayer.js';
 import { STEP } from './repeat.js';
 import { addDays, fmtDay, fmtTime, localDate, zonedToUtc } from './time.js';
@@ -43,6 +44,7 @@ export async function dayView(env, which) {
     { property: SOURCES[kind].date, date: { on_or_after: new Date(from - DAY).toISOString() } },
     { property: SOURCES[kind].date, date: { before: new Date(from + 2 * DAY).toISOString() } },
   ] })))).flat().filter(i => i.localDate === date).sort((a, b) => a.alertAt - b.alertAt);
+  await withJiha(env, items);
 
   const times = prayerTimes(date, env);
   const row = which === 'today' ? await trackerRow(env, date, false) : null;
@@ -65,7 +67,9 @@ export async function dayView(env, which) {
     const icon = i.kind === 'task' ? '' : `${SOURCES[i.kind].icon} `;
     const mark = isClosed(i) ? (i.status === SOURCES[i.kind].done ? '✅' : '⛔') : '▫️';
     const title = `${icon}${esc(i.title)}${STEP[i.repeat] ? ' 🔁' : ''}`;
-    lines.push(`<code>${when}</code> ${mark} ${isClosed(i) ? `<s>${title}</s>` : title}`);
+    // لكل مهمة جهتها، والمهمة بلا جهة شخصية
+    const jiha = i.kind === 'task' ? ` · ${i.jiha ? `🏢 ${esc(i.jiha)}` : '👤 شخصي'}` : '';
+    lines.push(`<code>${when}</code> ${mark} ${isClosed(i) ? `<s>${title}</s>` : title}${jiha}`);
   }
 
   const rows = [];
