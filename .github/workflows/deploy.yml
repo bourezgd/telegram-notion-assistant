@@ -1,0 +1,104 @@
+name: نشر البوت على Cloudflare
+
+# ينشر src/worker.js على Cloudflare Workers ويربطه بتلغرام. شغّله يدويًا مرة واحدة،
+# ثم يُعاد النشر تلقائيًا مع كل تعديل على الكود.
+# الأسرار المطلوبة: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, NOTION_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# اختياري: GEMINI_API_KEY (للرسائل الصوتية)
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', 'test/**', 'wrangler.toml', '.github/workflows/deploy.yml']
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: تثبيت wrangler
+        run: npm install --no-audit --no-fund
+
+      # لا نشر إن فشل أي اختبار (البوت الحالي يبقى يعمل كما هو)
+      - name: تشغيل الاختبارات
+        run: npm test
+
+      # مستودع القالب نفسه: اختبارات فقط بلا نشر
+      - name: التحقق من الأسرار
+        if: github.repository != 'bourezgd/telegram-notion-assistant'
+        run: |
+          for s in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID TELEGRAM_BOT_TOKEN; do
+            [ -n "${!s}" ] || { echo "::error::السرّ $s غير موجود في Settings ← Secrets"; exit 1; }
+          done
+
+      # مخزن KV لحفظ ما أُرسل: يُنشأ مرة واحدة ثم يُعاد استعماله
+      - name: التحقق من معرّفات Notion
+        if: github.repository != 'bourezgd/telegram-notion-assistant'
+        run: |
+          grep -qE '^DS_TASK = "[0-9a-f-]{32,36}"' wrangler.toml || { echo "::error::معرّفات قواعد Notion فارغة في wrangler.toml — شغّل scripts/setup-notion.mjs أولًا (انظر README)"; exit 1; }
+
+      - name: تجهيز مخزن KV
+        if: github.repository != 'bourezgd/telegram-notion-assistant'
+        run: |
+          TITLE=telegram-notion-assistant-state
+          find_id() { npx wrangler kv namespace list 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const a=JSON.parse(s.slice(s.search(/^\[/m)));const n=a.find(x=>x.title==='$TITLE');process.stdout.write(n?n.id:'')})"; }
+          ID=$(find_id)
+          if [ -z "$ID" ]; then npx wrangler kv namespace create "$TITLE"; ID=$(find_id); fi
+          [ -n "$ID" ] || { echo "::error::تعذّر إنشاء مخزن KV"; exit 1; }
+          sed -i "s/__KV_ID__/$ID/" wrangler.toml
+
+      - name: النشر
+        if: github.repository != 'bourezgd/telegram-notion-assistant'
+        id: deploy
+        run: |
+          npx wrangler deploy --var "GIT_SHA:${GITHUB_SHA::7}" 2>&1 | tee deploy.log
+          URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          [ -n "$URL" ] || { echo "::error::لم يظهر رابط workers.dev. افتح Workers & Pages في Cloudflare مرة واحدة لتفعيل النطاق الفرعي ثم أعد التشغيل."; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: رفع الأسرار إلى Cloudflare
+        if: github.repository != 'bourezgd/telegram-notion-assistant'
+        run: |
+          node -e 'const e=process.env;const o={NOTION_TOKEN:e.NOTION_TOKEN,TELEGRAM_BOT_TOKEN:e.TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID:e.TELEGRAM_CHAT_ID};if(e.GEMINI_API_KEY)o.GEMINI_API_KEY=e.GEMINI_API_KEY;require("fs").writeFileSync("secrets.json",JSON.stringify(o))'
+          npx wrangler secret bulk secrets.json
+          rm secrets.json
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: ربط تلغرام بالبوت (webhook)
+        if: github.repository != 'bourezgd/telegram-notion-assistant'
+        run: |
+          SECRET=$(printf %s "$TELEGRAM_BOT_TOKEN" | sha256sum | cut -c1-64)
+          curl -fsS "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+            -H 'Content-Type: application/json' \
+            -d "{\"url\":\"${{ steps.deploy.outputs.url }}/telegram\",\"secret_token\":\"$SECRET\",\"allowed_updates\":[\"message\",\"callback_query\"],\"drop_pending_updates\":true}"
+          echo
+          # قائمة الأوامر في تلغرام
+          curl -fsS "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setMyCommands" \
+            -H 'Content-Type: application/json' \
+            -d '{"commands":[{"command":"today","description":"📋 مهام اليوم"},{"command":"tomorrow","description":"📆 مهام الغد"},{"command":"week","description":"📊 التقرير الأسبوعي"},{"command":"spend","description":"💸 إنفاق مال"},{"command":"earn","description":"💵 قبض مال"},{"command":"money","description":"💰 ملخص مصاريف الشهر"},{"command":"quota","description":"📊 الحصة الشهرية لكل جهة"},{"command":"analysis","description":"📉 تحليل مصاريف الشهر الماضي"},{"command":"bills","description":"🧾 الفواتير والاشتراكات الدورية"},{"command":"morning","description":"☀️ الملخص الصباحي"},{"command":"dashboard","description":"📱 لوحتي: الرسوم والإحصاءات"},{"command":"wird","description":"📿 الأذكار والورد القرآني"},{"command":"habits","description":"🔥 العادات والسلاسل"},{"command":"growth","description":"📏 نمو الطفل"},{"command":"status","description":"🩺 حالة البوت"},{"command":"events","description":"🎂 المناسبات العائلية القادمة"},{"command":"ask","description":"💬 اسأل مساعدك عن مهامك ومصاريفك"},{"command":"add","description":"➕ إضافة مهمة أو موعد أو فكرة"},{"command":"settings","description":"⚙️ الإعدادات (مفتاح Gemini)"},{"command":"cancel","description":"✖️ إلغاء الإضافة الجارية"},{"command":"start","description":"إظهار الأزرار والمساعدة"}]}'
+          echo
+          # زر القائمة الطبيعي (الأوامر) بجانب خانة الكتابة؛ «📱 لوحتي» صار ضمن أزرار الشاشة
+          curl -fsS "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setChatMenuButton" \
+            -H 'Content-Type: application/json' \
+            -d "{\"chat_id\":$TELEGRAM_CHAT_ID,\"menu_button\":{\"type\":\"commands\"}}" \
+            || echo "::warning::تعذّر إرجاع زر القائمة"
+          echo
+          echo "✅ البوت يعمل على ${{ steps.deploy.outputs.url }}"
+        env:
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

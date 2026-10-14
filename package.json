@@ -1,0 +1,17 @@
+{
+  "name": "telegram-notion-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "description": "مساعد شخصي على تلغرام فوق Notion: مهام، مواعيد، مال، عادات، صلاة، ومساعد ذكي (Cloudflare Workers)",
+  "type": "module",
+  "scripts": {
+    "test": "eslint -c .eslintrc.json src/ && node --test 'test/*.test.mjs'",
+    "deploy": "wrangler deploy",
+    "setup:notion": "node scripts/setup-notion.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4",
+    "eslint": "^8.57.0"
+  },
+  "author": "ضياء الدين بورزق (https://github.com/bourezgd)"
+}
